@@ -1,0 +1,136 @@
+import { Router } from 'express';
+import XlsxPopulate from 'xlsx-populate';
+import fs from 'fs';
+import path from 'path';
+
+const router = Router();
+
+// Path to your golden template (you provide this file)
+const TEMPLATE_PATH = path.join(process.cwd(), 'backend', 'fixtures', 'intentTemplate.xlsx');
+
+// ---------------- helpers ----------------
+const norm = (s) => String(s ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+
+// Find the header row by scanning the first ~40 rows for the row with the most textual cells
+function findHeaderRow(sheet, maxScanRows = 40) {
+  let bestRow = 0, bestScore = -1;
+  for (let r = 1; r <= maxScanRows; r++) {
+    let score = 0;
+    for (let c = 1; c <= 300; c++) {
+      const v = sheet.cell(r, c).value();
+      if (v != null && String(v).trim() !== '' && /[A-Za-z0-9]/.test(String(v))) score++;
+    }
+    if (score > bestScore) { bestScore = score; bestRow = r; }
+  }
+  if (!bestRow) throw new Error('Could not detect header row');
+  return bestRow;
+}
+
+function buildHeaderMap(sheet, headerRow) {
+  const map = {};
+  for (let c = 1; c <= 300; c++) {
+    const raw = sheet.cell(headerRow, c).value();
+    if (!raw) continue;
+    // normalize and also collapse newlines to spaces to match keys like "Product Type\n (NDC, GPI)"
+    const key = norm(String(raw).replace(/\n/g, ' '));
+    map[key] = c;
+  }
+  return map;
+}
+
+function firstEmptyRow(sheet, headerRow) {
+  // Start just below headers; stop when an entirely empty row is found
+  let r = headerRow + 1;
+  while (true) {
+    const anyVal = sheet.row(r).cells().some(cell => {
+      const v = cell.value();
+      return v !== null && v !== undefined && String(v) !== '';
+    });
+    if (!anyVal) return r;
+    r++;
+    if (r > 50000) throw new Error('No empty row found (capped at 50k rows)');
+  }
+}
+
+// Clone template to tmp + append rows -> returns { fileName, fullPath }
+async function cloneAndAppend(rows = [], outName) {
+  if (!fs.existsSync(TEMPLATE_PATH)) {
+    throw new Error(`Golden template not found at ${TEMPLATE_PATH}`);
+  }
+
+  const outDir = path.join(process.cwd(), 'backend', 'tmp');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const fileName = outName || `CLINICAL_INTENT_${Date.now()}.xlsx`;
+  const fullPath = path.join(outDir, fileName);
+
+  // Clone the file verbatim to preserve all formatting
+  fs.copyFileSync(TEMPLATE_PATH, fullPath);
+
+  // Open clone and write values
+  const wb = await XlsxPopulate.fromFileAsync(fullPath);
+  const sheet = wb.sheet('CAT Automated') || wb.sheets()[0];
+
+  const headerRow = findHeaderRow(sheet);
+  const headerMap = buildHeaderMap(sheet, headerRow);
+  let r = firstEmptyRow(sheet, headerRow);
+
+  for (const row of (rows || [])) {
+    // Write each field by best header match
+    for (const [k, v] of Object.entries(row || {})) {
+      // try exact normalized key and a newline-collapsed variant
+      const nk = norm(k);
+      const nkNoNl = norm(String(k).replace(/\n/g, ' '));
+      const col = headerMap[nk] || headerMap[nkNoNl];
+      if (!col) continue;                 // unknown key → ignore safely
+      sheet.cell(r, col).value(v ?? '');
+    }
+    r++;
+  }
+
+  await wb.toFileAsync(fullPath);
+  return { fileName, fullPath };
+}
+
+// ---------------- routes ----------------
+
+/**
+ * POST /templates/generate
+ * Body: { rows?: Array<object>, fileName?: string }
+ * Returns: XLSX file (attachment) cloned from your golden template with rows appended.
+ */
+router.post('/generate', async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const outName = req.body?.fileName || `CLINICAL_INTENT_${Date.now()}.xlsx`;
+
+    const { fileName, fullPath } = await cloneAndAppend(rows, outName);
+    const buffer = await fs.promises.readFile(fullPath);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    return res.status(200).send(buffer);
+  } catch (e) {
+    console.error('[templates/generate]', e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+/**
+ * Optional: POST /templates/generate-meta
+ * Same as /generate, but returns JSON { fileName, fullPath } (no download)
+ * Useful if you want to append more rows or upload from server-side later.
+ */
+router.post('/generate-meta', async (req, res) => {
+  try {
+    const rows = Array.isArray(req.body?.rows) ? req.body.rows : [];
+    const outName = req.body?.fileName || `CLINICAL_INTENT_${Date.now()}.xlsx`;
+    const out = await cloneAndAppend(rows, outName);
+    return res.json({ ok: true, ...out });
+  } catch (e) {
+    console.error('[templates/generate-meta]', e);
+    return res.status(500).json({ ok: false, error: String(e?.message || e) });
+  }
+});
+
+export default router;
