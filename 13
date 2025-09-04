@@ -1,0 +1,26 @@
+When('I append this row into the intent file with:', (table) => {
+  cy.get('@intentPath').then((intent) => {
+    const filePath = intent.fullPath || intent;
+
+    const row = table.hashes()[0]; // single row from the outline
+    const mapped = {
+      PDLMRow: row.row,
+      EditType: row.edit,
+      ProductType: row.ptype,
+      ProductID: row.prod,
+      ListIDs: row.list,
+      LOBCodesToApply: row.lob
+      // add rest of your 58 fields if needed
+    };
+
+    cy.task('template:append', { filePath, rows: [mapped] }).then(res => {
+      cy.wrap(res).its('appended').should('eq', 1);
+    });
+  });
+});
+
+Then('the intent file should exist', () => {
+  cy.get('@intentPath').then(({ fullPath }) => {
+    cy.readFile(fullPath, 'binary'); // verify file exists
+  });
+});
