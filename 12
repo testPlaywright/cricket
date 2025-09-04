@@ -1,0 +1,17 @@
+Feature: Clinical Intent Template (58 fields)
+
+Background:
+  * task template:build, { outname: CLINICAL_INTENT.xlsx }
+  * as @intentPath
+
+Scenario Outline: Append multiple rows into the same 58-field template
+  When I append this row into the intent file with:
+    | row   | edit   | prod      | ptype | list  | lob  |
+    | <row> | <edit> | <prod>    | <ptype> | <list> | <lob> |
+  Then the intent file should exist
+
+  Examples:
+    | row | edit    | prod      | ptype | list  | lob  |
+    | 1   | VALID   | 700000001 | NDC   | LIST1 | MPL1 |
+    | 2   | INVALID | 700000002 | GPI   | LIST3 | MPL2 |
+    | 3   | VALID   | 700000003 | NDC   | LIST5 | MPL3 |
