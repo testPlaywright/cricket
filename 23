@@ -1,19 +1,17 @@
+// cypress.config.js
 const { defineConfig } = require('cypress');
 const fs = require('fs');
 const path = require('path');
 const ExcelJS = require('exceljs');
 const cucumber = require('cypress-cucumber-preprocessor').default;
-const dayjs = require('dayjs');
 
 const { queryDb } = require('./cypress/plugins/ConnectDB.cjs');
-const {
-  makeTemplate58FromScratch,
-  appendRows58
-} = require('./src/templateBuilder.js');
 
-const envJson = JSON.parse(
-  fs.readFileSync('cypress.env.json', 'utf-8')
-);
+// NOTE: adjust this path if your builder file lives elsewhere
+const { makeTemplate58FromScratch, appendRows58 } = require('./src/templateBuilder.js');
+
+// load env json (optional)
+const envJson = JSON.parse(fs.readFileSync('cypress.env.json', 'utf-8'));
 
 module.exports = defineConfig({
   defaultCommandTimeout: 300000,
@@ -31,12 +29,14 @@ module.exports = defineConfig({
     html: true,
     saveHtml: true,
     embeddedScreenshots: true,
-    saveAllAttempts: false
+    saveAllAttempts: false,
   },
+
   'cypress-cucumber-preprocessor': {
     nonGlobalStepDefinitions: true,
-    stepDefinitions: './cypress/e2e/stepdefinitions/'
+    stepDefinitions: './cypress/e2e/stepdefinitions/',
   },
+
   e2e: {
     specPattern: 'cypress/e2e/**/*.feature',
     supportFile: 'cypress/support/e2e.js',
@@ -45,56 +45,51 @@ module.exports = defineConfig({
     experimentalSessionAndOrigin: true,
 
     setupNodeEvents(on, config) {
-      // reporter init
+      // reporter + cucumber
       require('cypress-mochawesome-reporter/plugin')(on);
       on('file:preprocessor', cucumber());
 
-      // custom tasks
+      // ensure downloads dir exists once
+      const downloadsDir = path.join(__dirname, 'cypress', 'downloads');
+      if (!fs.existsSync(downloadsDir)) fs.mkdirSync(downloadsDir, { recursive: true });
+
+      // tasks
       on('task', {
-        // Build a new 58-field template
+        // Build a brand-new 58-field template (xlsx-populate)
         async 'template:build'({ outName = 'CLINICAL_INTENT.xlsx' } = {}) {
-          const outDir = path.join(__dirname, 'cypress', 'downloads');
-          const fullPath = await makeTemplate58FromScratch(outDir, outName);
-          return { outDir, outName, fullPath };
+          const fullPath = await makeTemplate58FromScratch(downloadsDir, outName);
+          return { outDir: downloadsDir, outName, fullPath };
         },
 
-        // Append rows to template
+        // Append rows to an existing template file (xlsx-populate)
         async 'template:append'({ filePath, rows = [] }) {
-          const written = await appendRows58(filePath, rows);
-          return { fullPath: filePath, appended: written.length };
+          const writtenCount = await appendRows58(filePath, rows);
+          return { fullPath: filePath, appended: writtenCount };
         },
 
-        // DB query
+        // DB passthrough
         queryDb({ query, values }) {
           return queryDb(query, values);
         },
 
-        // Read Excel error sheet with ExcelJS
+        // Read ValidationErrors sheet (ExcelJS, read-only)
         async readErrorExcelExcelJS(fileName) {
-          const filePath = path.join(
-            __dirname,
-            'cypress/downloads',
-            fileName
-          );
+          const filePath = path.join(downloadsDir, fileName);
           const workbook = new ExcelJS.Workbook();
           await workbook.xlsx.readFile(filePath);
 
-          const sheet =
-            workbook.getWorksheet('ValidationErrors') ||
-            workbook.worksheets[0];
-
+          const sheet = workbook.getWorksheet('ValidationErrors') || workbook.worksheets[0];
           const rows = [];
           sheet.eachRow({ includeEmpty: false }, (row, rowNumber) => {
             if (rowNumber === 1) return; // skip header
             rows.push({
               ticketId: row.getCell(1).value,
               field: row.getCell(4).value,
-              errorMessage: row.getCell(6).value
+              errorMessage: row.getCell(6).value,
             });
           });
-
           return rows;
-        }
+        },
       });
 
       return config;
@@ -103,14 +98,14 @@ module.exports = defineConfig({
     env: {
       BASE_URL: process.env.BASE_URL,
       uploadFileName: envJson.uploadFileName,
-      TAGS: 'not @ignore'
+      TAGS: 'not @ignore',
     },
-    retries: 1
+    retries: 1,
   },
 
   component: {
     setupNodeEvents(on, config) {
       return require('./cypress/plugins/index.js')(on, config);
-    }
-  }
+    },
+  },
 });
